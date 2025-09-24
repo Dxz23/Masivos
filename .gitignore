@@ -1,0 +1,7 @@
+
+node_modules
+.wwebjs_auth
+uploads
+reports
+npm-debug.log*
+.DS_Store

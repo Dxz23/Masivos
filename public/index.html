@@ -1,0 +1,90 @@
+<!-- public/index.html -->
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>WhatsApp Bulk Messenger</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="/public/style.css" />
+</head>
+<body>
+  <div class="container">
+    <header>
+      <h1>WhatsApp Bulk Messenger</h1>
+      <p>Envío masivo con <code>whatsapp-web.js</code>, CSV y barra de progreso.</p>
+    </header>
+
+    <section class="card">
+      <h2>Estado de WhatsApp</h2>
+      <div id="status" class="status">Cargando...</div>
+      <div id="qr-wrap" class="qr-wrap">
+        <canvas id="qr" class="qr"></canvas>
+        <p id="qr-help">Escanea el QR con tu WhatsApp (Dispositivos vinculados).</p>
+      </div>
+    </section>
+
+    <section class="card">
+      <h2>Configuración de envío</h2>
+      <form id="config-form">
+        <div class="grid">
+          <div class="field">
+            <label for="countryCode">Código de país</label>
+            <input type="text" id="countryCode" value="52" />
+          </div>
+          <div class="field">
+            <label for="delayAfterMessageMs">Delay después de mandar un mensaje (ms)</label>
+            <input type="number" id="delayAfterMessageMs" value="1500" min="0" step="100" />
+          </div>
+          <div class="field">
+            <label for="delayBetweenContactsMs">Delay entre contactos (ms)</label>
+            <input type="number" id="delayBetweenContactsMs" value="2500" min="0" step="100" />
+          </div>
+        </div>
+
+        <!-- NUEVO: Toggle Papelería -->
+        <div class="toggle">
+          <input type="checkbox" id="isPapeleria" />
+          <label for="isPapeleria"><strong>Modo Papelería</strong></label>
+          <span class="desc">Si está activo: envía <em>imagen + texto</em> en 1 mensaje (usa <code>media/imagen_uno.*</code> o <code>media/imagen_dos.*</code>). Si no: modo Dentista (solo texto).</span>
+        </div>
+
+        <div class="uploader">
+          <label for="csv">Carga tu CSV (columnas: Nombre, Telefono, Mensaje)</label>
+          <input type="file" id="csv" accept=".csv,text/csv" />
+        </div>
+
+        <div class="actions">
+          <button type="button" id="btn-upload">Subir CSV</button>
+          <button type="button" id="btn-start" disabled>Iniciar envío</button>
+          <button type="button" id="btn-stop" disabled>Detener</button>
+          <button type="button" id="btn-reset" title="Reinicia app y limpia memoria">Reiniciar todo</button> <!-- NUEVO -->
+        </div>
+      </form>
+
+      <div id="upload-info" class="muted"></div>
+
+      <div class="progress">
+        <div id="progress-bar" class="progress-bar" style="width: 0%"></div>
+      </div>
+      <div id="progress-text" class="muted">0%</div>
+    </section>
+
+    <section class="card">
+      <h2>Log</h2>
+      <div id="log" class="log"></div>
+      <div id="report" class="report"></div>
+    </section>
+
+    <footer>
+      <p>Usa listas con consentimiento y respeta las políticas de WhatsApp.</p>
+    </footer>
+  </div>
+
+  <script src="/socket.io/socket.io.js"></script>
+  <script src="/public/qrious.min.js"></script>
+  <script src="/public/client.js"></script>
+</body>
+</html>
