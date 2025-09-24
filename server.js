@@ -17,10 +17,9 @@ const io = new Server(server);
 
 const PORT = process.env.PORT || 3000;
 
-/* ------------------ Rutas persistentes (Volume) ------------------ */
-// Usa DATA_DIR si existe; si no, usa ~/data (de pptruser en esta imagen)
+/* ---------- Rutas persistentes (usa tu Volume) ---------- */
+// En Railway, monta tu volume en: /home/pptruser/data
 const DATA_BASE = process.env.DATA_DIR || path.join(os.homedir(), 'data');
-
 function ensureDir(p) { try { fs.mkdirSync(p, { recursive: true }); } catch (_) {} }
 
 const SESS_DIR   = path.join(DATA_BASE, 'wwebjs_auth');
@@ -30,21 +29,21 @@ const mediaDir   = path.join(DATA_BASE, 'media');
 
 [DATA_BASE, SESS_DIR, uploadsDir, reportsDir, mediaDir].forEach(ensureDir);
 
-/* ------------------ Static ------------------ */
+/* ---------- Static ---------- */
 app.use('/public', express.static(path.join(__dirname, 'public')));
 app.use('/reports', express.static(reportsDir));
-app.use('/media', express.static(mediaDir)); // opcional
+app.use('/media', express.static(mediaDir));
 app.get('/', (_req, res) => res.sendFile(path.join(__dirname, 'public', 'index.html')));
 app.get('/health', (_req, res) => res.status(200).send('ok'));
 
-/* ------------------ Multer (CSV) ------------------ */
+/* ---------- Multer (CSV) ---------- */
 const storage = multer.diskStorage({
   destination: (_req, _file, cb) => cb(null, uploadsDir),
   filename: (_req, file, cb) => cb(null, 'contacts-' + Date.now() + path.extname(file.originalname))
 });
 const upload = multer({ storage });
 
-/* ------------------ Detectar Chrome/Chromium ------------------ */
+/* ---------- Detectar Chrome/Chromium ---------- */
 function resolveChromePath() {
   const candidates = [
     process.env.PUPPETEER_EXECUTABLE_PATH,
@@ -62,7 +61,19 @@ function resolveChromePath() {
 const chromePath = resolveChromePath();
 console.log('[Puppeteer] executablePath =', chromePath || '(auto)');
 
-/* ------------------ WhatsApp client ------------------ */
+/* ---------- Web version cache (lee tus variables) ---------- */
+const WEB_CACHE_MODE   = (process.env.WEB_CACHE_MODE || 'remote').toLowerCase(); // 'remote' | 'local'
+const WEB_CACHE_REMOTE = process.env.WEB_CACHE_REMOTE
+  || 'https://raw.githubusercontent.com/wppconnect-team/wa-version/main/last.json';
+
+const CACHE_DIR = path.join(DATA_BASE, 'wwebjs_cache');
+ensureDir(CACHE_DIR);
+
+const webVersionCache = WEB_CACHE_MODE === 'remote'
+  ? { type: 'remote', remotePath: WEB_CACHE_REMOTE }
+  : { type: 'local',  path: CACHE_DIR };
+
+/* ---------- WhatsApp client (única definición) ---------- */
 const client = new Client({
   authStrategy: new LocalAuth({ dataPath: SESS_DIR }),
   puppeteer: {
@@ -77,8 +88,7 @@ const client = new Client({
     ],
     executablePath: chromePath || undefined
   },
-  // Ayuda a evitar errores de inyección por cambios de WA Web
-  webVersionCache: { type: 'remote' },
+  webVersionCache,                 // <- ahora sí con remotePath cuando corresponde
   takeoverOnConflict: true,
   restartOnAuthFailure: true
 });
@@ -89,7 +99,7 @@ let dataRows = [];
 let sending = false;
 let cancelFlag = false;
 
-/* ------------------ Eventos WhatsApp ------------------ */
+/* ---------- Eventos WhatsApp ---------- */
 client.on('qr', async (qr) => {
   try {
     lastQR = await QRCode.toDataURL(qr);
@@ -124,7 +134,7 @@ client.on('message_ack', (msg, ack) => io.emit('ack', { to: msg.to, ack }));
 
 client.initialize();
 
-/* ------------------ Helpers negocio ------------------ */
+/* ---------- Helpers ---------- */
 function sanitizePhone(raw) {
   if (!raw) return null;
   const s = String(raw).toLowerCase().trim();
@@ -150,7 +160,7 @@ function findImagePath(baseName) {
   return null;
 }
 
-/* ------------------ Endpoints ------------------ */
+/* ---------- Endpoints ---------- */
 app.post('/upload', upload.single('csv'), async (req, res) => {
   if (!req.file) return res.status(400).json({ ok: false, message: 'No se recibió archivo.' });
   const rows = [];
@@ -181,7 +191,7 @@ app.post('/reset', (_req, res) => {
   res.json({ ok: true });
 });
 
-/* ------------------ Socket.IO ------------------ */
+/* ---------- Socket.IO ---------- */
 io.on('connection', (socket) => {
   console.log('[Socket] Cliente conectado.');
   if (lastQR) socket.emit('qr', lastQR);
@@ -344,5 +354,6 @@ io.on('connection', (socket) => {
   socket.on('disconnect', () => console.log('[Socket] Cliente desconectado.'));
 });
 
-/* ------------------ Start ------------------ */
+/* ---------- Start ---------- */
 server.listen(PORT, () => console.log(`Servidor en http://localhost:${PORT}`));
+
