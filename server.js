@@ -1,4 +1,3 @@
-// server.js
 /* eslint-disable no-console */
 const express = require('express');
 const http = require('http');
@@ -9,7 +8,7 @@ const { parse } = require('csv-parse');
 const { Server } = require('socket.io');
 const dayjs = require('dayjs');
 const QRCode = require('qrcode');
-const { Client, LocalAuth, MessageMedia } = require('whatsapp-web.js'); // ← agrego MessageMedia
+const { Client, LocalAuth, MessageMedia } = require('whatsapp-web.js');
 
 const app = express();
 const server = http.createServer(app);
@@ -21,7 +20,7 @@ const PORT = process.env.PORT || 3000;
 function ensureDir(p) { try { fs.mkdirSync(p, { recursive: true }); } catch (e) {} }
 const uploadsDir = path.join(__dirname, 'uploads');
 const reportsDir = path.join(__dirname, 'reports');
-const mediaDir   = path.join(__dirname, 'media'); // NUEVO: carpeta para imagenes
+const mediaDir   = path.join(__dirname, 'media'); // carpeta para imágenes
 ensureDir(uploadsDir); ensureDir(reportsDir); ensureDir(mediaDir);
 
 // --- Static ---
@@ -36,10 +35,21 @@ const storage = multer.diskStorage({
 });
 const upload = multer({ storage });
 
-// --- WhatsApp client ---
+// --- WhatsApp client (ÚNICA definición) ---
 const client = new Client({
   authStrategy: new LocalAuth({ dataPath: path.join(__dirname, '.wwebjs_auth') }),
-  puppeteer: { headless: true, args: ['--no-sandbox', '--disable-setuid-sandbox'] }
+  puppeteer: {
+    headless: true,
+    args: [
+      '--no-sandbox',
+      '--disable-setuid-sandbox',
+      '--disable-dev-shm-usage'
+    ],
+    executablePath:
+      process.env.PUPPETEER_EXECUTABLE_PATH ||
+      process.env.CHROME_PATH ||
+      '/usr/bin/google-chrome-stable' // fallback para la imagen de Puppeteer
+  }
 });
 
 let lastQR = null;
@@ -48,6 +58,7 @@ let dataRows = []; // parsed CSV rows kept in memory
 let sending = false;
 let cancelFlag = false;
 
+// Eventos de WhatsApp
 client.on('qr', async (qr) => {
   lastQR = await QRCode.toDataURL(qr);
   io.emit('qr', lastQR);
@@ -57,12 +68,11 @@ client.on('ready', () => { isReady = true; io.emit('ready'); console.log('[Whats
 client.on('authenticated', () => console.log('[WhatsApp] Autenticado.'));
 client.on('auth_failure', (m) => { console.error('[WhatsApp] Falló autenticación:', m); io.emit('status', { level: 'error', message: 'Falló autenticación. Borra .wwebjs_auth si persiste.' }); });
 client.on('disconnected', (reason) => { console.warn('[WhatsApp] Desconectado:', reason); isReady = false; io.emit('status', { level: 'warn', message: 'Desconectado. Reiniciando cliente...' }); client.initialize(); });
-client.initialize();
-
 // Acks: -1 error, 0 pendiente, 1 servidor, 2 dispositivo, 3 leído, 4 reproducido
-client.on('message_ack', (msg, ack) => {
-  io.emit('ack', { to: msg.to, ack });
-});
+client.on('message_ack', (msg, ack) => io.emit('ack', { to: msg.to, ack }));
+
+// Inicializa el cliente (una sola vez)
+client.initialize();
 
 // --- Helpers ---
 function sanitizePhone(raw) {
@@ -84,7 +94,7 @@ function formatE164(countryCode, digits){
 async function sleep(ms) { return new Promise(res => setTimeout(res, ms)); }
 function csvEscape(v) { const s = (v ?? '').toString().replace(/"/g, '""'); return s.includes(',') ? `"${s}"` : s; }
 
-// Encontrar la primera imagen existente por baseName en /media
+// Buscar imágenes existentes por nombre base en /media
 const EXTS = ['.jpg','.jpeg','.png','.webp'];
 function findImagePath(baseName){
   for (const ext of EXTS) {
@@ -101,8 +111,8 @@ app.post('/upload', upload.single('csv'), async (req, res) => {
   fs.createReadStream(req.file.path)
     .pipe(parse({
       columns: true,
-      skip_empty_lines: false,    // para no perder filas vacías del ejemplo
-      trim: false,                // respetar mensaje EXACTO (sin recortar)
+      skip_empty_lines: false, // mantener filas vacías del ejemplo
+      trim: false,             // NO recortar: respetar el Mensaje EXACTO
       relax_quotes: true,
       relax_column_count: true
     }))
@@ -115,13 +125,11 @@ app.post('/upload', upload.single('csv'), async (req, res) => {
     .on('error', (err) => { console.error('[CSV] Error al parsear:', err); res.status(500).json({ ok: false, message: 'Error al parsear CSV.' }); });
 });
 
-// NUEVO: reset endpoint
+// Reset endpoint (para botón "Reiniciar todo")
 app.post('/reset', (req, res) => {
   dataRows = [];
   sending = false;
   cancelFlag = false;
-  lastQR = lastQR; // dejamos el QR actual si existe
-  isReady = isReady;
   return res.json({ ok: true });
 });
 
@@ -139,21 +147,28 @@ io.on('connection', (socket) => {
     const countryCode = String(payload.countryCode || '52').replace(/\D/g, '');
     const delayAfterMessageMs = Number(payload.delayAfterMessageMs || 1500);
     const delayBetweenContactsMs = Number(payload.delayBetweenContactsMs || 2500);
-    const isPapeleria = !!payload.isPapeleria; // NUEVO
+    const isPapeleria = !!payload.isPapeleria;
 
-    // Pre-carga de imagen para papelería (opcional si existe)
-    let mediaForPapeleria = null;
+    // Pre-carga de IMÁGENES para Papelería: intenta uno y dos
+    let mediaPapeleriaList = [];
     if (isPapeleria) {
-      const preferred = findImagePath('imagen_uno') || findImagePath('imagen_dos');
-      if (preferred) {
-        try {
-          mediaForPapeleria = MessageMedia.fromFilePath(preferred);
-          console.log('[Media] Imagen para papelería:', path.basename(preferred));
-        } catch (e) {
-          console.warn('[Media] No se pudo cargar imagen:', e?.message || e);
+      const p1 = findImagePath('imagen_uno');
+      const p2 = findImagePath('imagen_dos');
+      try {
+        if (p1) {
+          mediaPapeleriaList.push(MessageMedia.fromFilePath(p1));
+          console.log('[Media] Imagen para papelería:', path.basename(p1));
         }
-      } else {
-        console.warn('[Media] No se encontró imagen_uno/imagen_dos en /media');
+        if (p2) {
+          mediaPapeleriaList.push(MessageMedia.fromFilePath(p2));
+          console.log('[Media] Imagen para papelería:', path.basename(p2));
+        }
+        if (mediaPapeleriaList.length === 0) {
+          console.warn('[Media] No se encontró imagen_uno/imagen_dos en /media');
+        }
+      } catch (e) {
+        console.warn('[Media] No se pudieron cargar imágenes:', e?.message || e);
+        mediaPapeleriaList = [];
       }
     }
 
@@ -170,10 +185,10 @@ io.on('connection', (socket) => {
     for (let i = 0; i < total; i++) {
       if (cancelFlag) break;
       const row = dataRows[i] || {};
-      // Solo usamos Nombre, Telefono, Mensaje tal como pediste
+      // Solo usamos Nombre, Telefono, Mensaje tal cual
       const nombre = (row['Nombre'] ?? '').toString().trim();
       const telefonoRaw = (row['Telefono'] ?? '').toString().trim();
-      const mensaje = (row['Mensaje'] ?? '').toString(); // NO TRIM: exacto como viene
+      const mensaje = (row['Mensaje'] ?? '').toString(); // EXACTO, sin trim
 
       let mando = 'no';
       let estadoNumero = 'invalido';
@@ -204,13 +219,21 @@ io.on('connection', (socket) => {
           continue;
         }
 
-        // Envío
-        if (isPapeleria && mediaForPapeleria) {
-          // Papelería: imagen + texto en 1 mensaje (caption)
-          await client.sendMessage(numberId._serialized, mediaForPapeleria, { caption: mensaje });
-          socket.emit('progress', { index: i + 1, total, telefono: telefonoE164, negocio: nombre || '-', status: 'enviado (papelería)' });
+        // Envío según modo
+        if (isPapeleria && mediaPapeleriaList.length > 0) {
+          // Si hay DOS imágenes: 1) primera con caption (MENSAJE EXACTO), 2) segunda sin caption
+          if (mediaPapeleriaList.length >= 2) {
+            await client.sendMessage(numberId._serialized, mediaPapeleriaList[0], { caption: mensaje });
+            await sleep(250); // pausa corta para que WhatsApp agrupe
+            await client.sendMessage(numberId._serialized, mediaPapeleriaList[1]);
+            socket.emit('progress', { index: i + 1, total, telefono: telefonoE164, negocio: nombre || '-', status: 'enviado (papelería: 2 imgs)' });
+          } else {
+            // Solo una imagen disponible
+            await client.sendMessage(numberId._serialized, mediaPapeleriaList[0], { caption: mensaje });
+            socket.emit('progress', { index: i + 1, total, telefono: telefonoE164, negocio: nombre || '-', status: 'enviado (papelería: 1 img)' });
+          }
         } else {
-          // Dentista (o si no hay imagen): solo texto, como ya lo tenías
+          // Modo Dentista (o sin imágenes): solo TEXTO
           await client.sendMessage(numberId._serialized, mensaje);
           socket.emit('progress', { index: i + 1, total, telefono: telefonoE164, negocio: nombre || '-', status: 'enviado' });
         }
