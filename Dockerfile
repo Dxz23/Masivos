@@ -19,3 +19,7 @@ EXPOSE 8080
 
 # Arranque
 CMD ["node", "server.js"]
+
+VOLUME /data
+
+
