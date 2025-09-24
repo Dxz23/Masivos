@@ -1,21 +1,20 @@
-# Usa la imagen oficial de Puppeteer (ya trae Chrome + libs)
+# Usa la imagen oficial de Puppeteer (trae Chromium + librerías)
 FROM ghcr.io/puppeteer/puppeteer:latest
 
 WORKDIR /app
 
-# Instala dependencias (solo prod)
+# Instala dependencias (solo producción)
 COPY package*.json ./
 RUN npm ci --omit=dev
 
 # Copia el proyecto
 COPY . .
 
-# Ajustes para Puppeteer/Chrome en contenedor
+# Ajustes comunes
 ENV NODE_ENV=production \
-    PUPPETEER_SKIP_DOWNLOAD=true \
-    PUPPETEER_EXECUTABLE_PATH=/usr/bin/google-chrome-stable
+    PUPPETEER_SKIP_DOWNLOAD=true
 
-# Railway suele poner PORT=8080; tu app ya usa process.env.PORT
+# Railway expone 8080 por defecto. Tu app usa process.env.PORT.
 EXPOSE 8080
 
 # Arranque
