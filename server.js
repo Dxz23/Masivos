@@ -17,28 +17,42 @@ const io = new Server(server);
 
 const PORT = process.env.PORT || 3000;
 
-/* ---------- Rutas persistentes (usa tu Volume) ---------- */
-// En Railway, monta tu volume en: /home/pptruser/data
-const DATA_BASE = process.env.DATA_DIR || '/data'; // Asegúrate de que el volumen esté en /data
-function ensureDir(p) {
+/* ---------- DATA_DIR con fallback (soluciona EACCES) ---------- */
+function tryEnsureWritable(dir) {
+  if (!dir) return null;
   try {
-    // Asegúrate de que el directorio existe y tiene permisos adecuados
-    if (!fs.existsSync(p)) {
-      fs.mkdirSync(p, { recursive: true });
-    }
-    // Cambiar permisos del directorio para asegurar escritura
-    fs.chmodSync(p, '777');
-  } catch (_) {
-    console.error('Error al asegurar el directorio:', p);
+    fs.mkdirSync(dir, { recursive: true });
+    fs.accessSync(dir, fs.constants.W_OK);
+    return dir;
+  } catch (e) {
+    console.error('[DATA_DIR] No escribible:', dir, '-', e.message);
+    return null;
   }
+}
+
+const CANDIDATES = [
+  process.env.DATA_DIR,                 // lo que definas en Railway
+  '/home/pptruser/data',               // HOME del usuario (recomendado para volume)
+  '/data',                             // mount clásico (falla si es root:root 755)
+  path.join(os.homedir(), 'data'),     // fallback en HOME
+  '/tmp/masivos-data'                  // último recurso (no persistente)
+];
+
+const DATA_BASE = CANDIDATES.find(tryEnsureWritable) || '/tmp/masivos-data';
+console.log('[DATA_DIR] Usando:', DATA_BASE);
+
+function ensureDir(p) {
+  try { fs.mkdirSync(p, { recursive: true }); }
+  catch (e) { console.error('Error al asegurar dir:', p, '-', e.message); }
 }
 
 const SESS_DIR   = path.join(DATA_BASE, 'wwebjs_auth');
 const uploadsDir = path.join(DATA_BASE, 'uploads');
 const reportsDir = path.join(DATA_BASE, 'reports');
 const mediaDir   = path.join(DATA_BASE, 'media');
+const cacheDir   = path.join(DATA_BASE, 'wwebjs_cache');
 
-[DATA_BASE, SESS_DIR, uploadsDir, reportsDir, mediaDir].forEach(ensureDir);
+[SESS_DIR, uploadsDir, reportsDir, mediaDir, cacheDir].forEach(ensureDir);
 
 /* ---------- Static ---------- */
 app.use('/public', express.static(path.join(__dirname, 'public')));
@@ -72,21 +86,21 @@ function resolveChromePath() {
 const chromePath = resolveChromePath();
 console.log('[Puppeteer] executablePath =', chromePath || '(auto)');
 
-/* ---------- Web version cache (lee tus variables) ---------- */
+/* ---------- Web version cache (lee variables) ---------- */
 const WEB_CACHE_MODE   = (process.env.WEB_CACHE_MODE || 'remote').toLowerCase(); // 'remote' | 'local'
 const WEB_CACHE_REMOTE = process.env.WEB_CACHE_REMOTE
   || 'https://raw.githubusercontent.com/wppconnect-team/wa-version/main/last.json';
 
-const CACHE_DIR = path.join(DATA_BASE, 'wwebjs_cache');
-ensureDir(CACHE_DIR);
-
 const webVersionCache = WEB_CACHE_MODE === 'remote'
   ? { type: 'remote', remotePath: WEB_CACHE_REMOTE }
-  : { type: 'local',  path: CACHE_DIR };
+  : { type: 'local',  path: cacheDir };
 
-/* ---------- WhatsApp client (única definición) ---------- */
+/* ---------- WhatsApp client ---------- */
 const client = new Client({
-  authStrategy: new LocalAuth({ dataPath: SESS_DIR }),
+  authStrategy: new LocalAuth({
+    dataPath: SESS_DIR,
+    clientId: 'masivos' // aísla sesiones entre deploys si tienes varios
+  }),
   puppeteer: {
     headless: true,
     args: [
@@ -99,7 +113,7 @@ const client = new Client({
     ],
     executablePath: chromePath || undefined
   },
-  webVersionCache,                 // <- ahora sí con remotePath cuando corresponde
+  webVersionCache,
   takeoverOnConflict: true,
   restartOnAuthFailure: true
 });
