@@ -19,8 +19,19 @@ const PORT = process.env.PORT || 3000;
 
 /* ---------- Rutas persistentes (usa tu Volume) ---------- */
 // En Railway, monta tu volume en: /home/pptruser/data
-const DATA_BASE = process.env.DATA_DIR || path.join(os.homedir(), 'data');
-function ensureDir(p) { try { fs.mkdirSync(p, { recursive: true }); } catch (_) {} }
+const DATA_BASE = process.env.DATA_DIR || '/data'; // Asegúrate de que el volumen esté en /data
+function ensureDir(p) {
+  try {
+    // Asegúrate de que el directorio existe y tiene permisos adecuados
+    if (!fs.existsSync(p)) {
+      fs.mkdirSync(p, { recursive: true });
+    }
+    // Cambiar permisos del directorio para asegurar escritura
+    fs.chmodSync(p, '777');
+  } catch (_) {
+    console.error('Error al asegurar el directorio:', p);
+  }
+}
 
 const SESS_DIR   = path.join(DATA_BASE, 'wwebjs_auth');
 const uploadsDir = path.join(DATA_BASE, 'uploads');
@@ -356,4 +367,3 @@ io.on('connection', (socket) => {
 
 /* ---------- Start ---------- */
 server.listen(PORT, () => console.log(`Servidor en http://localhost:${PORT}`));
-
