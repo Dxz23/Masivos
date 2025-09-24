@@ -35,6 +35,24 @@ const storage = multer.diskStorage({
 });
 const upload = multer({ storage });
 
+// --- Helper: detectar ruta de Chrome/Chromium en el contenedor ---
+function resolveChromePath() {
+  const candidates = [
+    process.env.PUPPETEER_EXECUTABLE_PATH,
+    process.env.CHROME_PATH,
+    '/usr/bin/chromium',
+    '/usr/bin/chromium-browser',
+    '/usr/bin/google-chrome',
+    '/usr/bin/google-chrome-stable'
+  ];
+  for (const p of candidates) {
+    if (p && fs.existsSync(p)) return p;
+  }
+  return null; // si queda null, Puppeteer resuelve automáticamente
+}
+const chromePath = resolveChromePath();
+console.log('[Puppeteer] executablePath =', chromePath || '(auto)');
+
 // --- WhatsApp client (ÚNICA definición) ---
 const client = new Client({
   authStrategy: new LocalAuth({ dataPath: path.join(__dirname, '.wwebjs_auth') }),
@@ -45,10 +63,7 @@ const client = new Client({
       '--disable-setuid-sandbox',
       '--disable-dev-shm-usage'
     ],
-    executablePath:
-      process.env.PUPPETEER_EXECUTABLE_PATH ||
-      process.env.CHROME_PATH ||
-      '/usr/bin/google-chrome-stable' // fallback para la imagen de Puppeteer
+    executablePath: chromePath
   }
 });
 
@@ -74,7 +89,7 @@ client.on('message_ack', (msg, ack) => io.emit('ack', { to: msg.to, ack }));
 // Inicializa el cliente (una sola vez)
 client.initialize();
 
-// --- Helpers ---
+// --- Helpers de negocio ---
 function sanitizePhone(raw) {
   if (!raw) return null;
   const s = String(raw).toLowerCase().trim();
