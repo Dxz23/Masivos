@@ -4,6 +4,7 @@ const http = require('http');
 const path = require('path');
 const multer = require('multer');
 const fs = require('fs');
+const os = require('os');
 const { parse } = require('csv-parse');
 const { Server } = require('socket.io');
 const dayjs = require('dayjs');
@@ -16,35 +17,34 @@ const io = new Server(server);
 
 const PORT = process.env.PORT || 3000;
 
-/* ---------- Rutas de datos (persisten en el Volume /data) ---------- */
+/* ------------------ Rutas persistentes (Volume) ------------------ */
+// Usa DATA_DIR si existe; si no, usa ~/data (de pptruser en esta imagen)
+const DATA_BASE = process.env.DATA_DIR || path.join(os.homedir(), 'data');
+
 function ensureDir(p) { try { fs.mkdirSync(p, { recursive: true }); } catch (_) {} }
 
-const DATA_BASE = process.env.DATA_DIR || '/data'; // tu Volume en Railway
-ensureDir(DATA_BASE);
+const SESS_DIR   = path.join(DATA_BASE, 'wwebjs_auth');
+const uploadsDir = path.join(DATA_BASE, 'uploads');
+const reportsDir = path.join(DATA_BASE, 'reports');
+const mediaDir   = path.join(DATA_BASE, 'media');
 
-const SESS_DIR    = path.join(DATA_BASE, 'wwebjs_auth'); // sesión persistente
-const uploadsDir  = path.join(DATA_BASE, 'uploads');
-const reportsDir  = path.join(DATA_BASE, 'reports');
-const mediaDir    = path.join(DATA_BASE, 'media');
+[DATA_BASE, SESS_DIR, uploadsDir, reportsDir, mediaDir].forEach(ensureDir);
 
-[SESS_DIR, uploadsDir, reportsDir, mediaDir].forEach(ensureDir);
-
-/* ---------- Static ---------- */
+/* ------------------ Static ------------------ */
 app.use('/public', express.static(path.join(__dirname, 'public')));
 app.use('/reports', express.static(reportsDir));
-app.use('/media', express.static(mediaDir)); // opcional para ver/servir tus imágenes
+app.use('/media', express.static(mediaDir)); // opcional
 app.get('/', (_req, res) => res.sendFile(path.join(__dirname, 'public', 'index.html')));
-app.get('/health', (_req, res) => res.status(200).send('ok')); // útil si configuras healthcheck
+app.get('/health', (_req, res) => res.status(200).send('ok'));
 
-/* ---------- Multer (CSV) ---------- */
+/* ------------------ Multer (CSV) ------------------ */
 const storage = multer.diskStorage({
   destination: (_req, _file, cb) => cb(null, uploadsDir),
-  filename: (_req, file, cb) =>
-    cb(null, 'contacts-' + Date.now() + path.extname(file.originalname))
+  filename: (_req, file, cb) => cb(null, 'contacts-' + Date.now() + path.extname(file.originalname))
 });
 const upload = multer({ storage });
 
-/* ---------- Chrome/Chromium path ---------- */
+/* ------------------ Detectar Chrome/Chromium ------------------ */
 function resolveChromePath() {
   const candidates = [
     process.env.PUPPETEER_EXECUTABLE_PATH,
@@ -57,12 +57,12 @@ function resolveChromePath() {
   for (const p of candidates) {
     if (p && fs.existsSync(p)) return p;
   }
-  return null; // Puppeteer resolverá su Chromium propio si queda null
+  return null; // deja que Puppeteer resuelva su Chromium
 }
 const chromePath = resolveChromePath();
 console.log('[Puppeteer] executablePath =', chromePath || '(auto)');
 
-/* ---------- WhatsApp Client ---------- */
+/* ------------------ WhatsApp client ------------------ */
 const client = new Client({
   authStrategy: new LocalAuth({ dataPath: SESS_DIR }),
   puppeteer: {
@@ -77,9 +77,8 @@ const client = new Client({
     ],
     executablePath: chromePath || undefined
   },
-  // Evita errores de inyección por cambios de WA Web
-  webVersionCache: { type: 'remote' }, // usa cache remota mantenida por wwebjs
-  // Si tu número saca LOGOUT, vuelve a mostrar QR
+  // Ayuda a evitar errores de inyección por cambios de WA Web
+  webVersionCache: { type: 'remote' },
   takeoverOnConflict: true,
   restartOnAuthFailure: true
 });
@@ -90,7 +89,7 @@ let dataRows = [];
 let sending = false;
 let cancelFlag = false;
 
-/* ---------- Eventos WhatsApp ---------- */
+/* ------------------ Eventos WhatsApp ------------------ */
 client.on('qr', async (qr) => {
   try {
     lastQR = await QRCode.toDataURL(qr);
@@ -108,6 +107,7 @@ client.on('ready', () => {
 });
 
 client.on('authenticated', () => console.log('[WhatsApp] Autenticado.'));
+
 client.on('auth_failure', (m) => {
   console.error('[WhatsApp] Falló autenticación:', m);
   io.emit('status', { level: 'error', message: 'Autenticación fallida. Escanea el QR de nuevo.' });
@@ -117,17 +117,14 @@ client.on('disconnected', (reason) => {
   console.warn('[WhatsApp] Desconectado:', reason);
   isReady = false;
   io.emit('status', { level: 'warn', message: `Desconectado (${reason}). Reiniciando cliente...` });
-  // Reintento suave tras desconexión
   setTimeout(() => client.initialize().catch(() => {}), 1500);
 });
 
-client.on('message_ack', (msg, ack) => {
-  io.emit('ack', { to: msg.to, ack });
-});
+client.on('message_ack', (msg, ack) => io.emit('ack', { to: msg.to, ack }));
 
 client.initialize();
 
-/* ---------- Helpers negocio ---------- */
+/* ------------------ Helpers negocio ------------------ */
 function sanitizePhone(raw) {
   if (!raw) return null;
   const s = String(raw).toLowerCase().trim();
@@ -136,12 +133,13 @@ function sanitizePhone(raw) {
   if (digits.length < 7) return null;
   return digits;
 }
-
 function formatE164(countryCode, digits) {
   let d = digits;
   if (!d.startsWith(countryCode)) d = countryCode + d;
   return '+' + d;
 }
+async function sleep(ms) { return new Promise(res => setTimeout(res, ms)); }
+function csvEscape(v) { const s = (v ?? '').toString().replace(/"/g, '""'); return s.includes(',') ? `"${s}"` : s; }
 
 const EXTS = ['.jpg', '.jpeg', '.png', '.webp'];
 function findImagePath(baseName) {
@@ -152,18 +150,15 @@ function findImagePath(baseName) {
   return null;
 }
 
-async function sleep(ms) { return new Promise(res => setTimeout(res, ms)); }
-function csvEscape(v) { const s = (v ?? '').toString().replace(/"/g, '""'); return s.includes(',') ? `"${s}"` : s; }
-
-/* ---------- Endpoints ---------- */
+/* ------------------ Endpoints ------------------ */
 app.post('/upload', upload.single('csv'), async (req, res) => {
   if (!req.file) return res.status(400).json({ ok: false, message: 'No se recibió archivo.' });
   const rows = [];
   fs.createReadStream(req.file.path)
     .pipe(parse({
       columns: true,
-      skip_empty_lines: false,   // no perder filas vacías
-      trim: false,               // respetar Mensaje EXACTO (sin recortar)
+      skip_empty_lines: false,
+      trim: false,              // respetar el Mensaje EXACTO
       relax_quotes: true,
       relax_column_count: true
     }))
@@ -186,7 +181,7 @@ app.post('/reset', (_req, res) => {
   res.json({ ok: true });
 });
 
-/* ---------- Socket.IO ---------- */
+/* ------------------ Socket.IO ------------------ */
 io.on('connection', (socket) => {
   console.log('[Socket] Cliente conectado.');
   if (lastQR) socket.emit('qr', lastQR);
@@ -202,22 +197,16 @@ io.on('connection', (socket) => {
     const delayBetweenContactsMs = Number(payload.delayBetweenContactsMs || 2500);
     const isPapeleria = !!payload.isPapeleria;
 
-    // Carga de imágenes (papelería)
+    // Carga de imágenes para Papelería
     let mediaPapeleriaList = [];
     if (isPapeleria) {
       try {
         const p1 = findImagePath('imagen_uno');
         const p2 = findImagePath('imagen_dos');
-        if (p1) {
-          mediaPapeleriaList.push(MessageMedia.fromFilePath(p1));
-          console.log('[Media] Papelería:', path.basename(p1));
-        }
-        if (p2) {
-          mediaPapeleriaList.push(MessageMedia.fromFilePath(p2));
-          console.log('[Media] Papelería:', path.basename(p2));
-        }
+        if (p1) mediaPapeleriaList.push(MessageMedia.fromFilePath(p1));
+        if (p2) mediaPapeleriaList.push(MessageMedia.fromFilePath(p2));
         if (mediaPapeleriaList.length === 0) {
-          console.warn('[Media] No hay imagen_uno/imagen_dos en /data/media');
+          console.warn('[Media] No hay imagen_uno/imagen_dos en', mediaDir);
         }
       } catch (e) {
         console.warn('[Media] No se pudieron cargar imágenes:', e?.message || e);
@@ -242,7 +231,7 @@ io.on('connection', (socket) => {
       const row = dataRows[i] || {};
       const nombre      = (row['Nombre']   ?? '').toString().trim();
       const telefonoRaw = (row['Telefono'] ?? '').toString().trim();
-      const mensaje     = (row['Mensaje']  ?? '').toString(); // EXACTO (sin trim)
+      const mensaje     = (row['Mensaje']  ?? '').toString(); // EXACTO
 
       let mando = 'no';
       let estadoNumero = 'invalido';
@@ -278,7 +267,7 @@ io.on('connection', (socket) => {
         if (isPapeleria && mediaPapeleriaList.length > 0) {
           if (mediaPapeleriaList.length >= 2) {
             await client.sendMessage(numberId._serialized, mediaPapeleriaList[0], { caption: mensaje });
-            await sleep(250); // pequeño gap para agrupar como álbum
+            await sleep(250);
             await client.sendMessage(numberId._serialized, mediaPapeleriaList[1]);
             socket.emit('progress', { index: i + 1, total, telefono: telefonoE164, negocio: nombre || '-', status: 'enviado (papelería: 2 imgs)' });
           } else {
@@ -311,20 +300,30 @@ io.on('connection', (socket) => {
       }
     }
 
-    // Reportes
+    // Reportes CSV
     const stamp = dayjs().format('YYYYMMDD-HHmmss');
     const reportAll     = path.join(reportsDir, `report-${stamp}.csv`);
     const reportValid   = path.join(reportsDir, `report-validos-${stamp}.csv`);
     const reportInvalid = path.join(reportsDir, `report-invalidos-${stamp}.csv`);
 
-    fs.writeFileSync(reportAll, 'Telefono,Negocio,Mando Mensaje\n' +
-      results.map(r => `${csvEscape(r['Telefono'])},${csvEscape(r['Negocio'])},${csvEscape(r['Mando Mensaje'])}`).join('\n'), 'utf8');
-
-    fs.writeFileSync(reportValid, 'Telefono,Negocio,Estado,Mando Mensaje\n' +
-      resultsValid.map(r => `${csvEscape(r['Telefono'])},${csvEscape(r['Negocio'])},${csvEscape(r['Estado'])},${csvEscape(r['Mando Mensaje'])}`).join('\n'), 'utf8');
-
-    fs.writeFileSync(reportInvalid, 'Telefono,Negocio,Estado,Motivo\n' +
-      resultsInvalid.map(r => `${csvEscape(r['Telefono'])},${csvEscape(r['Negocio'])},${csvEscape(r['Estado'])},${csvEscape(r['Motivo'])}`).join('\n'), 'utf8');
+    fs.writeFileSync(
+      reportAll,
+      'Telefono,Negocio,Mando Mensaje\n' +
+        results.map(r => `${csvEscape(r['Telefono'])},${csvEscape(r['Negocio'])},${csvEscape(r['Mando Mensaje'])}`).join('\n'),
+      'utf8'
+    );
+    fs.writeFileSync(
+      reportValid,
+      'Telefono,Negocio,Estado,Mando Mensaje\n' +
+        resultsValid.map(r => `${csvEscape(r['Telefono'])},${csvEscape(r['Negocio'])},${csvEscape(r['Estado'])},${csvEscape(r['Mando Mensaje'])}`).join('\n'),
+      'utf8'
+    );
+    fs.writeFileSync(
+      reportInvalid,
+      'Telefono,Negocio,Estado,Motivo\n' +
+        resultsInvalid.map(r => `${csvEscape(r['Telefono'])},${csvEscape(r['Negocio'])},${csvEscape(r['Estado'])},${csvEscape(r['Motivo'])}`).join('\n'),
+      'utf8'
+    );
 
     sending = false;
     socket.emit('done', {
@@ -345,5 +344,5 @@ io.on('connection', (socket) => {
   socket.on('disconnect', () => console.log('[Socket] Cliente desconectado.'));
 });
 
-/* ---------- Start ---------- */
+/* ------------------ Start ------------------ */
 server.listen(PORT, () => console.log(`Servidor en http://localhost:${PORT}`));
