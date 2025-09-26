@@ -96,64 +96,6 @@ const webVersionCache = WEB_CACHE_MODE === 'remote'
   : { type: 'local',  path: cacheDir };
 
 
-const client = new Client({
-  authStrategy: new LocalAuth({
-    dataPath: SESS_DIR,
-    clientId: 'masivos' // aísla sesiones entre deploys si tienes varios
-  }),
-  puppeteer: {
-    headless: true,
-    args: [
-      '--no-sandbox',
-      '--disable-setuid-sandbox',
-      '--disable-dev-shm-usage',
-      '--disable-gpu',
-      '--no-zygote',
-      '--single-process'
-    ],
-    executablePath: chromePath || undefined
-  },
-  webVersionCache,
-  takeoverOnConflict: true,
-  restartOnAuthFailure: true
-});
-
-let lastQR = null;
-let isReady = false;
-client.on('qr', async (qr) => {
-  try {
-    lastQR = await QRCode.toDataURL(qr);
-    io.emit('qr', lastQR);
-    console.log('[QR] Nuevo QR generado.');
-  } catch (e) {
-    console.error('[QR] Error generando QR:', e?.message || e);
-  }
-});
-
-client.on('ready', () => {
-  isReady = true;
-  io.emit('ready');
-  console.log('[WhatsApp] Cliente listo.');
-});
-
-client.on('authenticated', () => console.log('[WhatsApp] Autenticado.'));
-
-client.on('auth_failure', (m) => {
-  console.error('[WhatsApp] Falló autenticación:', m);
-  io.emit('status', { level: 'error', message: 'Autenticación fallida. Escanea el QR de nuevo.' });
-});
-
-client.on('disconnected', (reason) => {
-  console.warn('[WhatsApp] Desconectado:', reason);
-  isReady = false;
-  io.emit('status', { level: 'warn', message: `Desconectado (${reason}). Reiniciando cliente...` });
-  setTimeout(() => client.initialize().catch(() => {}), 1500);
-});
-
-client.on('message_ack', (msg, ack) => io.emit('ack', { to: msg.to, ack }));
-
-client.initialize();
-
 /* ---------- Estado de datos y envío (se mantiene) ---------- */
 let dataRows = [];
 let sending = false;     // compat (global); ahora también habrá por cuenta
