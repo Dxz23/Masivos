@@ -1,4 +1,3 @@
-
 // Mantengo TODO lo que tenías y agrego lo nuevo marcado
 
 const socket = io();
@@ -22,7 +21,16 @@ const delayAfterMessageMs = document.getElementById('delayAfterMessageMs');
 const delayBetweenContactsMs = document.getElementById('delayBetweenContactsMs');
 const isPapeleria = document.getElementById('isPapeleria');        // NUEVO
 
+// NUEVO: selección de cuenta y scheduler
+const accountId = document.getElementById('accountId');             // NUEVO
+const doSchedule = document.getElementById('doSchedule');           // NUEVO
+const scheduleAt = document.getElementById('scheduleAt');           // NUEVO
+
 let uploaded = false;
+
+// NUEVO: mapas por cuenta para mostrar el QR correcto
+const lastQRs = {};   // {accountId: dataUrl}
+const readyMap = {};  // {accountId: boolean}
 
 function logLine(text, level = 'info'){
   const line = document.createElement('div');
@@ -44,10 +52,36 @@ function drawQR(dataURL){
   img.src = dataURL;
 }
 
-socket.on('qr', (dataUrl) => { setStatus('Escanea el QR en tu WhatsApp > Dispositivos vinculados.'); drawQR(dataUrl); qrWrap.style.display = 'flex'; });
-socket.on('ready', () => { setStatus('WhatsApp listo ✔'); qrWrap.style.display = 'none'; logLine('Cliente WhatsApp listo.', 'success'); });
+// COMPAT: el servidor ahora puede enviar {accountId,dataUrl} o un string (legado)
+socket.on('qr', (payload) => {
+  const isString = typeof payload === 'string';
+  const aid = isString ? 'dentista' : payload.accountId;
+  const dataUrl = isString ? payload : payload.dataUrl;
+  lastQRs[aid] = dataUrl;
+  if (aid === accountId.value) {
+    setStatus(`(${aid}) Escanea el QR en tu WhatsApp > Dispositivos vinculados.`);
+    drawQR(dataUrl); qrWrap.style.display = 'flex';
+  }
+});
+
+// COMPAT: ahora llega {accountId}
+socket.on('ready', (payload) => {
+  const aid = payload?.accountId || 'dentista';
+  readyMap[aid] = true;
+  if (aid === accountId.value) {
+    setStatus(`(${aid}) WhatsApp listo ✔`);
+    qrWrap.style.display = 'none';
+  }
+  logLine(`Cliente WhatsApp listo (${aid}).`, 'success');
+});
+
 socket.on('status', (p) => { logLine(p.message, p.level); });
-socket.on('progress', (p) => { logLine(`(${p.index}/${p.total}) ${p.negocio} - ${p.telefono} => ${p.status}`); });
+
+// Progreso (ahora con accountId)
+socket.on('progress', (p) => {
+  const tag = p.accountId ? `[${p.accountId}] ` : '';
+  logLine(`${tag}(${p.index}/${p.total}) ${p.negocio} - ${p.telefono} => ${p.status}`);
+});
 
 // ⬇⬇⬇ CAMBIO 1: clamp + redondeo 0..100 ⬇⬇⬇
 socket.on('percent', (p) => {
@@ -57,9 +91,12 @@ socket.on('percent', (p) => {
 });
 // ⬆⬆⬆ CAMBIO 1 ⬆⬆⬆
 
-// Ack log
+// Ack log (ahora con accountId)
 const ACK_MAP = { "-1":"ACK_ERROR", "0":"ACK_PENDING", "1":"ACK_SERVER", "2":"ACK_DEVICE", "3":"ACK_READ", "4":"ACK_PLAYED" };
-socket.on('ack', ({to, ack}) => { logLine(`ACK ${ACK_MAP[String(ack)] || ack} para ${to}`); });
+socket.on('ack', ({accountId: aid, to, ack}) => {
+  const tag = aid ? `[${aid}] ` : '';
+  logLine(`${tag}ACK ${ACK_MAP[String(ack)] || ack} para ${to}`);
+});
 
 socket.on('done', (info) => {
   // ⬇⬇⬇ CAMBIO 2: forzar 100% al terminar ⬇⬇⬇
@@ -70,11 +107,27 @@ socket.on('done', (info) => {
   btnStart.disabled = false; btnStop.disabled = true; reportEl.innerHTML = '';
   const list = document.createElement('ul'); list.style.listStyle = 'none'; list.style.paddingLeft = '0';
   const mkLink = (href, text) => { const li = document.createElement('li'); const a = document.createElement('a'); a.href = href; a.textContent = text; a.setAttribute('download',''); li.appendChild(a); return li; };
-  if (info.reportUrl){ list.appendChild(mkLink(info.reportUrl, 'Descargar reporte completo (Telefono, Negocio, Mando Mensaje)')); }
-  if (info.reportValidUrl){ list.appendChild(mkLink(info.reportValidUrl, 'Descargar reporte: Números válidos/activos')); }
-  if (info.reportInvalidUrl){ list.appendChild(mkLink(info.reportInvalidUrl, 'Descargar reporte: Números inválidos')); }
+  if (info.reportUrl){ list.appendChild(mkLink(info.reportUrl, `(${info.accountId || 'cuenta'}) Reporte completo (Telefono, Negocio, Mando Mensaje)`)); }
+  if (info.reportValidUrl){ list.appendChild(mkLink(info.reportValidUrl, `(${info.accountId || 'cuenta'}) Números válidos/activos`)); }
+  if (info.reportInvalidUrl){ list.appendChild(mkLink(info.reportInvalidUrl, `(${info.accountId || 'cuenta'}) Números inválidos`)); }
   reportEl.appendChild(list);
-  logLine('Proceso finalizado.', 'success');
+  logLine(`(${info.accountId || 'cuenta'}) Proceso finalizado.`, 'success');
+});
+
+// Cambiar UI de QR/estado al cambiar cuenta
+accountId.addEventListener('change', () => {
+  const aid = accountId.value;
+  if (readyMap[aid]) {
+    setStatus(`(${aid}) WhatsApp listo ✔`);
+    qrWrap.style.display = 'none';
+  } else if (lastQRs[aid]) {
+    setStatus(`(${aid}) Escanea el QR en tu WhatsApp > Dispositivos vinculados.`);
+    drawQR(lastQRs[aid]);
+    qrWrap.style.display = 'flex';
+  } else {
+    setStatus(`(${aid}) Esperando QR...`);
+    qrWrap.style.display = 'flex';
+  }
 });
 
 btnUpload.addEventListener('click', async () => {
@@ -93,19 +146,49 @@ btnUpload.addEventListener('click', async () => {
   finally{ btnUpload.disabled = false; }
 });
 
+// Enviar ahora o programar
 btnStart.addEventListener('click', () => {
   if (!uploaded){ alert('Carga un CSV primero.'); return; }
   progressBar.style.width = '0%'; progressText.textContent = '0%'; reportEl.innerHTML = '';
   btnStart.disabled = true; btnStop.disabled = false;
-  socket.emit('start-sending', {
+
+  const payload = {
+    accountId: accountId.value,
     countryCode: countryCode.value,
     delayAfterMessageMs: Number(delayAfterMessageMs.value),
     delayBetweenContactsMs: Number(delayBetweenContactsMs.value),
     isPapeleria: !!isPapeleria.checked, // NUEVO
-  });
+  };
+
+  if (doSchedule.checked) {
+    if (!scheduleAt.value) {
+      alert('Selecciona fecha/hora.');
+      btnStart.disabled = false; btnStop.disabled = true;
+      return;
+    }
+    const whenMs = new Date(scheduleAt.value).getTime();
+    socket.emit('schedule-sending', { ...payload, scheduleAtMs: whenMs });
+    // No bloqueamos botones; es una programación futura
+    btnStart.disabled = false; btnStop.disabled = true;
+  } else {
+    socket.emit('start-sending', payload);
+  }
 });
 
-btnStop.addEventListener('click', () => { socket.emit('stop-sending'); btnStop.disabled = true; btnStart.disabled = false; });
+btnStop.addEventListener('click', () => {
+  socket.emit('stop-sending', { accountId: accountId.value }); // cancelar la cuenta actual
+  btnStop.disabled = true; btnStart.disabled = false;
+});
+
+// NUEVO: feedback de scheduler
+socket.on('scheduled', ({ jobId, accountId: aid, runAt }) => {
+  const d = new Date(runAt);
+  logLine(`(${aid}) Programado ${jobId} para ${d.toLocaleString()}`, 'success');
+});
+
+socket.on('schedule-cancelled', ({ jobId }) => {
+  logLine(`Programación cancelada: ${jobId}`, 'warn');
+});
 
 // NUEVO: reiniciar todo
 btnReset.addEventListener('click', async () => {
