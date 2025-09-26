@@ -44,11 +44,31 @@
           </div>
         </div>
 
-        <!-- NUEVO: Toggle Papelería -->
+        <!-- NUEVO: Selección de cuenta -->
+        <div class="field">
+          <label for="accountId">Cuenta de envío</label>
+          <select id="accountId">
+            <option value="dentista">Dentista (texto)</option>
+            <option value="papeleria">Papelería (imagen + texto)</option>
+          </select>
+        </div>
+
+        <!-- NUEVO: Toggle Papelería (se respeta tu lógica original) -->
         <div class="toggle">
           <input type="checkbox" id="isPapeleria" />
           <label for="isPapeleria"><strong>Modo Papelería</strong></label>
-          <span class="desc">Si está activo: envía <em>imagen + texto</em> en 1 mensaje (usa <code>media/imagen_uno.*</code> o <code>media/imagen_dos.*</code>). Si no: modo Dentista (solo texto).</span>
+          <span class="desc">Si está activo: envía <em>imagen + texto</em> (usa <code>media/imagen_uno.*</code> o <code>media/imagen_dos.*</code>). Si no: modo Dentista (solo texto).</span>
+        </div>
+
+        <!-- NUEVO: Programación -->
+        <div class="toggle">
+          <input type="checkbox" id="doSchedule" />
+          <label for="doSchedule"><strong>Programar envío</strong></label>
+          <span class="desc">Si activas, se ejecutará a la fecha/hora seleccionada.</span>
+        </div>
+        <div class="field">
+          <label for="scheduleAt">Fecha y hora</label>
+          <input type="datetime-local" id="scheduleAt" />
         </div>
 
         <div class="uploader">
@@ -60,7 +80,7 @@
           <button type="button" id="btn-upload">Subir CSV</button>
           <button type="button" id="btn-start" disabled>Iniciar envío</button>
           <button type="button" id="btn-stop" disabled>Detener</button>
-          <button type="button" id="btn-reset" title="Reinicia app y limpia memoria">Reiniciar todo</button> <!-- NUEVO -->
+          <button type="button" id="btn-reset" title="Reinicia app y limpia memoria">Reiniciar todo</button>
         </div>
       </form>
 
