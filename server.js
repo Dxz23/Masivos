@@ -95,10 +95,7 @@ const webVersionCache = WEB_CACHE_MODE === 'remote'
   ? { type: 'remote', remotePath: WEB_CACHE_REMOTE }
   : { type: 'local',  path: cacheDir };
 
-/* ======================================================================= */
-/* ===================== BLOQUE ORIGINAL (COMENTADO) ====================== */
-/* =========== (se conserva para cumplir "sin quitar nada") ============== */
-/*
+
 const client = new Client({
   authStrategy: new LocalAuth({
     dataPath: SESS_DIR,
@@ -156,9 +153,6 @@ client.on('disconnected', (reason) => {
 client.on('message_ack', (msg, ack) => io.emit('ack', { to: msg.to, ack }));
 
 client.initialize();
-*/
-/* =================== FIN BLOQUE ORIGINAL (COMENTADO) ==================== */
-/* ======================================================================= */
 
 /* ---------- Estado de datos y envío (se mantiene) ---------- */
 let dataRows = [];
