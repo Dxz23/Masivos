@@ -54,6 +54,43 @@ const cacheDir   = path.join(DATA_BASE, 'wwebjs_cache');
 
 [SESS_DIR, uploadsDir, reportsDir, mediaDir, cacheDir].forEach(ensureDir);
 
+/* === NUEVO: Ledger de enviados (anti-duplicados por cuenta, persistente) === */
+const ledgerDir = path.join(DATA_BASE, 'ledger');
+ensureDir(ledgerDir);
+
+// sentSets[accountId] = Set<phoneKey>
+const sentSets = Object.create(null);
+function ledgerPathTxt(accountId){ return path.join(ledgerDir, `sent-${accountId}.txt`); }
+function ensureLedger(accountId){
+  if (!sentSets[accountId]) {
+    sentSets[accountId] = new Set();
+    const p = ledgerPathTxt(accountId);
+    if (fs.existsSync(p)) {
+      try {
+        const lines = fs.readFileSync(p, 'utf8').split(/\r?\n/).map(s => s.trim()).filter(Boolean);
+        for (const L of lines) sentSets[accountId].add(L);
+      } catch(e){ console.warn('[Ledger] No se pudo leer', p, e.message); }
+    }
+  }
+}
+function hasSent(accountId, phoneKey){
+  ensureLedger(accountId);
+  return sentSets[accountId].has(phoneKey);
+}
+function markSent(accountId, phoneKey){
+  ensureLedger(accountId);
+  if (sentSets[accountId].has(phoneKey)) return;
+  sentSets[accountId].add(phoneKey);
+  fs.appendFile(ledgerPathTxt(accountId), phoneKey + '\n', () => {});
+}
+
+/* === NUEVO: Progreso por cuenta (para hidratar nuevos clientes) === */
+const progressByAccount = Object.create(null); // {id:{processed,total,percent}}
+
+/* === NUEVO: Estado de subida (para hidratar) === */
+let hasUpload = false;
+let uploadedFilename = '';
+
 /* ---------- Static ---------- */
 app.use('/public', express.static(path.join(__dirname, 'public')));
 app.use('/reports', express.static(reportsDir));
@@ -246,6 +283,12 @@ async function sendCampaign(accountId, payload, socket) {
   const resultsInvalid = [];
   let processed = 0;
 
+  // === NUEVO: preparar ledger y progreso
+  ensureLedger(accountId);
+  const sessionSeen = new Set(); // evita duplicados dentro de esta corrida
+  progressByAccount[accountId] = { processed: 0, total, percent: 0 };
+  io.emit('percent', { accountId, processed: 0, total, percent: 0 });
+
   socket.emit('status', { level: 'info', message: `(${accountId}) Iniciando envío a ${total} filas...` });
 
   for (let i = 0; i < total; i++) {
@@ -265,23 +308,45 @@ async function sendCampaign(accountId, payload, socket) {
     try {
       if (!telefonoDigits) {
         motivo = 'vacío/descartado';
-        socket.emit('progress', { accountId, index: i + 1, total, telefono: telefonoE164, negocio: nombre || '-', status: 'saltado' });
+        io.emit('progress', { accountId, index: i + 1, total, telefono: telefonoE164, negocio: nombre || '-', status: 'saltado' });
         results.push({ Telefono: telefonoE164, Negocio: nombre || '', 'Mando Mensaje': mando });
         resultsInvalid.push({ Telefono: telefonoE164, Negocio: nombre || '', Estado: estadoNumero, Motivo: motivo });
         processed++;
+        const percentSkip = Math.round((processed / total) * 100);
+        progressByAccount[accountId] = { processed, total, percent: percentSkip };
+        io.emit('percent', { accountId, processed, total, percent: percentSkip });
         continue;
       }
 
       telefonoE164 = formatE164(countryCode, telefonoDigits);
+      const phoneKey = telefonoE164.replace(/\D/g, '');
+
+      // === NUEVO: anti-duplicados (persistente + sesión)
+      if (sessionSeen.has(phoneKey) || hasSent(accountId, phoneKey)) {
+        motivo = 'duplicado (ya enviado)';
+        io.emit('progress', { accountId, index: i + 1, total, telefono: telefonoE164, negocio: nombre || '-', status: 'duplicado (omitido)' });
+        results.push({ Telefono: telefonoE164, Negocio: nombre || '', 'Mando Mensaje': mando });
+        resultsInvalid.push({ Telefono: telefonoE164, Negocio: nombre || '', Estado: 'duplicado', Motivo: motivo });
+        processed++;
+        const percentDup = Math.round((processed / total) * 100);
+        progressByAccount[accountId] = { processed, total, percent: percentDup };
+        io.emit('percent', { accountId, processed, total, percent: percentDup });
+        await sleep(delayBetweenContactsMs);
+        continue;
+      }
+      sessionSeen.add(phoneKey);
 
       // Verifica usuario de WhatsApp
       const numberId = await client.getNumberId(telefonoE164.replace(/\D/g, ''));
       if (!numberId) {
         motivo = 'no registrado en WhatsApp';
-        socket.emit('progress', { accountId, index: i + 1, total, telefono: telefonoE164, negocio: nombre || '-', status: 'invalido' });
+        io.emit('progress', { accountId, index: i + 1, total, telefono: telefonoE164, negocio: nombre || '-', status: 'invalido' });
         results.push({ Telefono: telefonoE164, Negocio: nombre || '', 'Mando Mensaje': mando });
         resultsInvalid.push({ Telefono: telefonoE164, Negocio: nombre || '', Estado: estadoNumero, Motivo: motivo });
         processed++;
+        const percentInv = Math.round((processed / total) * 100);
+        progressByAccount[accountId] = { processed, total, percent: percentInv };
+        io.emit('percent', { accountId, processed, total, percent: percentInv });
         await sleep(delayBetweenContactsMs);
         continue;
       }
@@ -292,22 +357,24 @@ async function sendCampaign(accountId, payload, socket) {
           await client.sendMessage(numberId._serialized, mediaPapeleriaList[0], { caption: mensaje });
           await sleep(250);
           await client.sendMessage(numberId._serialized, mediaPapeleriaList[1]);
-          socket.emit('progress', { accountId, index: i + 1, total, telefono: telefonoE164, negocio: nombre || '-', status: 'enviado (papelería: 2 imgs)' });
+          io.emit('progress', { accountId, index: i + 1, total, telefono: telefonoE164, negocio: nombre || '-', status: 'enviado (papelería: 2 imgs)' });
         } else {
           await client.sendMessage(numberId._serialized, mediaPapeleriaList[0], { caption: mensaje });
-          socket.emit('progress', { accountId, index: i + 1, total, telefono: telefonoE164, negocio: nombre || '-', status: 'enviado (papelería: 1 img)' });
+          io.emit('progress', { accountId, index: i + 1, total, telefono: telefonoE164, negocio: nombre || '-', status: 'enviado (papelería: 1 img)' });
         }
       } else {
         await client.sendMessage(numberId._serialized, mensaje);
-        socket.emit('progress', { accountId, index: i + 1, total, telefono: telefonoE164, negocio: nombre || '-', status: 'enviado' });
+        io.emit('progress', { accountId, index: i + 1, total, telefono: telefonoE164, negocio: nombre || '-', status: 'enviado' });
       }
 
       estadoNumero = 'activo';
       mando = 'si';
+      // === NUEVO: marca en ledger al confirmar que se mandó
+      markSent(accountId, phoneKey);
       await sleep(delayAfterMessageMs);
     } catch (err) {
       console.error(`[Envio:${accountId}] Error con ${telefonoE164}:`, err && err.message ? err.message : err);
-      socket.emit('progress', { accountId, index: i + 1, total, telefono: telefonoE164, negocio: nombre || '-', status: 'error' });
+      io.emit('progress', { accountId, index: i + 1, total, telefono: telefonoE164, negocio: nombre || '-', status: 'error' });
       motivo = 'error envío';
     } finally {
       results.push({ Telefono: telefonoE164, Negocio: nombre || '', 'Mando Mensaje': mando });
@@ -318,7 +385,8 @@ async function sendCampaign(accountId, payload, socket) {
       }
       processed++;
       const percent = Math.round((processed / total) * 100);
-      socket.emit('percent', { accountId, processed, total, percent });
+      progressByAccount[accountId] = { processed, total, percent };
+      io.emit('percent', { accountId, processed, total, percent });
       await sleep(delayBetweenContactsMs);
     }
   }
@@ -349,13 +417,14 @@ async function sendCampaign(accountId, payload, socket) {
   );
 
   state[accountId].sending = false;
+  progressByAccount[accountId] = { processed: total, total, percent: 100 };  // NUEVO
   io.emit('done', {
     accountId,
     reportUrl: `/reports/${path.basename(reportAll)}`,
     reportValidUrl: `/reports/${path.basename(reportValid)}`,
     reportInvalidUrl: `/reports/${path.basename(reportInvalid)}`
   });
-  socket.emit('status', { level: 'success', message: `(${accountId}) Envío finalizado.` });
+  io.emit('status', { level: 'success', message: `(${accountId}) Envío finalizado.` });
 }
 
 /* =================== NUEVO: SCHEDULER EN MEMORIA =================== */
@@ -393,9 +462,18 @@ app.post('/upload', upload.single('csv'), async (req, res) => {
     }))
     .on('data', (row) => rows.push(row))
     .on('end', () => {
-      dataRows = rows;
-      console.log(`[CSV] Cargadas ${rows.length} filas.`);
-      res.json({ ok: true, count: rows.length, filename: path.basename(req.file.path) });
+      // Mantén filas reales: al menos una de las tres columnas con algo
+      const filtered = rows.filter(r => {
+        const n = (r['Nombre']   ?? '').toString().trim();
+        const t = (r['Telefono'] ?? '').toString().trim();
+        const m = (r['Mensaje']  ?? '').toString(); // exacto
+        return (n || t || m);
+      });
+      dataRows = filtered;
+      hasUpload = dataRows.length > 0;
+      uploadedFilename = path.basename(req.file.path);
+      console.log(`[CSV] Cargadas ${dataRows.length} filas.`);
+      res.json({ ok: true, count: dataRows.length, filename: uploadedFilename });
     })
     .on('error', (err) => {
       console.error('[CSV] Error al parsear:', err);
@@ -410,13 +488,49 @@ app.post('/reset', (_req, res) => {
   for (const id of ACCOUNTS) {
     state[id].sending = false;
     state[id].cancelFlag = false;
+    progressByAccount[id] = { processed: 0, total: 0, percent: 0 }; // NUEVO
   }
+  // Nota: NO tocamos el ledger (anti-duplicados) a propósito.
   res.json({ ok: true });
+});
+
+// === NUEVO (opcional): resetear ledger de una cuenta concreta
+app.post('/ledger/reset/:accountId', (req, res) => {
+  const aid = req.params.accountId;
+  try {
+    sentSets[aid] = new Set();
+    const p = ledgerPathTxt(aid);
+    if (fs.existsSync(p)) fs.unlinkSync(p);
+    return res.json({ ok: true, message: `Ledger de ${aid} limpiado.` });
+  } catch(e){
+    return res.status(500).json({ ok: false, message: e.message });
+  }
 });
 
 /* ---------- Socket.IO ---------- */
 io.on('connection', (socket) => {
   console.log('[Socket] Cliente conectado.');
+
+  // === NUEVO: hidratar estado para nuevos clientes (móvil/otro navegador)
+  socket.emit('hydrate', {
+    hasUpload,
+    csvCount: dataRows.length,
+    uploadedFilename,
+    accounts: ACCOUNTS.reduce((acc, id) => {
+      const prog = progressByAccount[id] || { processed: 0, total: dataRows.length || 0, percent: 0 };
+      acc[id] = {
+        ready: !!ready[id],
+        sending: !!state[id].sending,
+        processed: prog.processed,
+        total: prog.total || dataRows.length || 0,
+        percent: prog.percent
+      };
+      return acc;
+    }, {}),
+    scheduled: Object.entries(scheduledJobs).map(([jobId, j]) => ({
+      jobId, accountId: j.accountId, runAt: j.runAt
+    }))
+  });
 
   // Emitir estado/QR por cada cuenta
   for (const id of ACCOUNTS) {
