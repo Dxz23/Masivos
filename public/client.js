@@ -212,3 +212,39 @@ btnReset.addEventListener('click', async () => {
     logLine('Error al reiniciar: ' + e.message, 'error');
   }
 });
+
+/* === NUEVO: hidratar estado al conectar desde otro dispositivo/navegador === */
+socket.on('hydrate', (s) => {
+  if (s?.hasUpload) {
+    uploaded = true;
+    uploadInfo.textContent = `CSV cargado: ${s.csvCount} filas.`;
+    btnStart.disabled = false;
+  }
+  if (s?.accounts && s.accounts[accountId.value]) {
+    const p = s.accounts[accountId.value];
+    const pct = Math.max(0, Math.min(100, Math.round(Number(p.percent || 0))));
+    progressBar.style.width = pct + '%';
+    progressText.textContent = pct + '%';
+
+    if (p.ready) {
+      setStatus(`(${accountId.value}) WhatsApp listo ✔`);
+      qrWrap.style.display = 'none';
+    } else if (lastQRs[accountId.value]) {
+      setStatus(`(${accountId.value}) Escanea el QR en tu WhatsApp > Dispositivos vinculados.`);
+      drawQR(lastQRs[accountId.value]);
+      qrWrap.style.display = 'flex';
+    } else {
+      setStatus(`(${accountId.value}) Esperando QR...`);
+      qrWrap.style.display = 'flex';
+    }
+
+    btnStop.disabled = !p.sending;
+    if (!p.sending && uploaded) btnStart.disabled = false;
+  }
+
+  if (Array.isArray(s?.scheduled)) {
+    s.scheduled.forEach(j => {
+      logLine(`(${j.accountId}) Programado ${j.jobId} para ${new Date(j.runAt).toLocaleString()}`, 'success');
+    });
+  }
+});
